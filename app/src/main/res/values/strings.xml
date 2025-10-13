@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XMPP Video Call</string>
+    <string name="login">Login</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="server">Server</string>
+    <string name="port">Port</string>
+    <string name="connecting">Connecting…</string>
+    <string name="connected">Connected</string>
+    <string name="disconnected">Disconnected</string>
+    <string name="contacts">Contacts</string>
+    <string name="incoming_call">Incoming Call</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+    <string name="end_call">End Call</string>
+    <string name="mute">Mute</string>
+    <string name="unmute">Unmute</string>
+    <string name="camera_on">Camera On</string>
+    <string name="camera_off">Camera Off</string>
+    <string name="switch_camera">Switch Camera</string>
+    <string name="calling">Calling…</string>
+    <string name="ringing">Ringing…</string>
+    <string name="connected_call">Connected</string>
+</resources>
+
