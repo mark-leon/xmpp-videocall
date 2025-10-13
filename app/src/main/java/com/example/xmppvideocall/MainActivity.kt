@@ -10,12 +10,23 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.example.xmppvideocall.databinding.ActivityMainBinding
+import com.example.xmppvideocall.XmppConnectionManager
+import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.launch
+import android.widget.Button
+import android.widget.TextView
+import android.widget.ProgressBar
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityMainBinding
+    private lateinit var usernameInput: TextInputEditText
+    private lateinit var passwordInput: TextInputEditText
+    private lateinit var serverInput: TextInputEditText
+    private lateinit var portInput: TextInputEditText
+    private lateinit var loginButton: Button
+    private lateinit var statusText: TextView
+    private lateinit var progressBar: ProgressBar
+
     private val xmppManager = XmppConnectionManager()
 
     private val PERMISSIONS_REQUEST_CODE = 100
@@ -26,15 +37,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
 
-        // Set the static reference
-        MainActivity.xmppConnectionManager = xmppManager
-
+        initViews()
         checkPermissions()
         setupUI()
         setupConnectionManager()
+    }
+
+    private fun initViews() {
+        usernameInput = findViewById(R.id.usernameInput)
+        passwordInput = findViewById(R.id.passwordInput)
+        serverInput = findViewById(R.id.serverInput)
+        portInput = findViewById(R.id.portInput)
+        loginButton = findViewById(R.id.loginButton)
+        statusText = findViewById(R.id.statusText)
+        progressBar = findViewById(R.id.progressBar)
     }
 
     private fun checkPermissions() {
@@ -52,11 +70,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupUI() {
-        binding.loginButton.setOnClickListener {
-            val username = binding.usernameInput.text.toString()
-            val password = binding.passwordInput.text.toString()
-            val server = binding.serverInput.text.toString()
-            val port = binding.portInput.text.toString().toIntOrNull() ?: 5222
+        usernameInput.setText("leion")
+        passwordInput.setText("123")
+
+        loginButton.setOnClickListener {
+            val username = usernameInput.text.toString()
+            val password = passwordInput.text.toString()
+            val server = serverInput.text.toString()
+            val port = portInput.text.toString().toIntOrNull() ?: 5222
 
             if (username.isEmpty() || password.isEmpty() || server.isEmpty()) {
                 Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
@@ -72,29 +93,30 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 when (state) {
                     XmppConnectionManager.ConnectionState.CONNECTING -> {
-                        binding.statusText.text = getString(R.string.connecting)
-                        binding.progressBar.visibility = View.VISIBLE
-                        binding.loginButton.isEnabled = false
+                        statusText.text = getString(R.string.connecting)
+                        progressBar.visibility = View.VISIBLE
+                        loginButton.isEnabled = false
                     }
                     XmppConnectionManager.ConnectionState.AUTHENTICATED -> {
-                        binding.statusText.text = getString(R.string.connected)
-                        binding.progressBar.visibility = View.GONE
-                        binding.loginButton.isEnabled = true
+                        statusText.text = getString(R.string.connected)
+                        progressBar.visibility = View.GONE
+                        loginButton.isEnabled = true
 
-                        // Navigate to contacts
-                        val intent = Intent(this, ContactsActivity::class.java)
+                        xmppConnectionManager = xmppManager
+                        val intent = Intent(this, HomeActivity::class.java)
+                        intent.putExtra("USERNAME", usernameInput.text.toString())
                         startActivity(intent)
                     }
                     XmppConnectionManager.ConnectionState.ERROR -> {
-                        binding.statusText.text = "Connection failed"
-                        binding.progressBar.visibility = View.GONE
-                        binding.loginButton.isEnabled = true
+                        statusText.text = "Connection failed"
+                        progressBar.visibility = View.GONE
+                        loginButton.isEnabled = true
                         Toast.makeText(this, "Connection failed", Toast.LENGTH_SHORT).show()
                     }
                     XmppConnectionManager.ConnectionState.DISCONNECTED -> {
-                        binding.statusText.text = getString(R.string.disconnected)
-                        binding.progressBar.visibility = View.GONE
-                        binding.loginButton.isEnabled = true
+                        statusText.text = getString(R.string.disconnected)
+                        progressBar.visibility = View.GONE
+                        loginButton.isEnabled = true
                     }
                     else -> {}
                 }
@@ -122,7 +144,6 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         if (isFinishing) {
             xmppManager.cleanup()
-            MainActivity.xmppConnectionManager = null
         }
     }
 

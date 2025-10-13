@@ -1,118 +1,119 @@
 package com.example.xmppvideocall
-
-import android.app.Dialog
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.example.xmppvideocall.databinding.ActivityCallBinding
-import com.example.xmppvideocall.databinding.DialogIncomingCallBinding
-
-import org.jxmpp.jid.impl.JidCreate
-import org.webrtc.MediaStream
+import com.example.xmppvideocall.JingleSession
+import com.example.xmppvideocall.CallState
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import org.webrtc.SurfaceViewRenderer
+import android.widget.TextView
 
 class CallActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityCallBinding
-    private lateinit var jingleManager: JingleCallManager
+    private lateinit var remoteVideoView: SurfaceViewRenderer
+    private lateinit var localVideoView: SurfaceViewRenderer
+    private lateinit var callStatusText: TextView
+    private lateinit var contactNameText: TextView
+    private lateinit var toggleAudioButton: FloatingActionButton
+    private lateinit var toggleVideoButton: FloatingActionButton
+    private lateinit var switchCameraButton: FloatingActionButton
+    private lateinit var endCallButton: FloatingActionButton
+
     private var currentSession: JingleSession? = null
     private var isAudioMuted = false
     private var isVideoOff = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityCallBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_call)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        initViews()
         setupVideoViews()
-        setupJingleManager()
         setupUI()
         handleIntent()
     }
 
-    private fun setupVideoViews() {
-        val eglBase = XmppApplication.instance.webRtcManager.eglBase
-        binding.localVideoView.init(eglBase.eglBaseContext, null)
-        binding.remoteVideoView.init(eglBase.eglBaseContext, null)
-
-        binding.localVideoView.setZOrderMediaOverlay(true)
-        binding.localVideoView.setEnableHardwareScaler(true)
-        binding.remoteVideoView.setEnableHardwareScaler(true)
+    private fun initViews() {
+        remoteVideoView = findViewById(R.id.remoteVideoView)
+        localVideoView = findViewById(R.id.localVideoView)
+        callStatusText = findViewById(R.id.callStatusText)
+        contactNameText = findViewById(R.id.contactNameText)
+        toggleAudioButton = findViewById(R.id.toggleAudioButton)
+        toggleVideoButton = findViewById(R.id.toggleVideoButton)
+        switchCameraButton = findViewById(R.id.switchCameraButton)
+        endCallButton = findViewById(R.id.endCallButton)
     }
 
-    private fun setupJingleManager() {
-        val connection = MainActivity.xmppConnectionManager?.getConnection()
+    private fun setupVideoViews() {
+        val eglBase = XmppApplication.instance.webRtcManager.eglBase
+        localVideoView.init(eglBase.eglBaseContext, null)
+        remoteVideoView.init(eglBase.eglBaseContext, null)
 
-        if (connection == null) {
-            Toast.makeText(this, "Not connected to XMPP", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-
-        jingleManager = JingleCallManager(
-            connection,
-            XmppApplication.instance.webRtcManager
-        )
-
-        jingleManager.onIncomingCall = { sessionId, from, hasVideo ->
-            showIncomingCallDialog(sessionId, from.toString(), hasVideo)
-        }
-
-        jingleManager.onCallEnded = {
-            finish()
-        }
+        localVideoView.setZOrderMediaOverlay(true)
+        localVideoView.setEnableHardwareScaler(true)
+        remoteVideoView.setEnableHardwareScaler(true)
     }
 
     private fun setupUI() {
-        binding.toggleAudioButton.setOnClickListener {
+        toggleAudioButton.setOnClickListener {
             isAudioMuted = currentSession?.toggleAudio() == false
             updateAudioButton()
         }
 
-        binding.toggleVideoButton.setOnClickListener {
+        toggleVideoButton.setOnClickListener {
             isVideoOff = currentSession?.toggleVideo() == false
             updateVideoButton()
-            binding.localVideoView.visibility = if (isVideoOff) View.GONE else View.VISIBLE
+            localVideoView.visibility = if (isVideoOff) View.GONE else View.VISIBLE
         }
 
-        binding.switchCameraButton.setOnClickListener {
+        switchCameraButton.setOnClickListener {
             currentSession?.switchCamera()
         }
 
-        binding.endCallButton.setOnClickListener {
+        endCallButton.setOnClickListener {
             endCall()
         }
     }
 
     private fun handleIntent() {
+        val sessionId = intent.getStringExtra("SESSION_ID")
         val recipientJid = intent.getStringExtra("RECIPIENT_JID")
         val audioOnly = intent.getBooleanExtra("AUDIO_ONLY", false)
         val isIncoming = intent.getBooleanExtra("IS_INCOMING", false)
 
-        if (!isIncoming && recipientJid != null) {
-            // Outgoing call
-            initiateCall(recipientJid, !audioOnly)
-        }
-    }
+        contactNameText.text = recipientJid ?: "Unknown"
 
-    private fun initiateCall(recipientJid: String, videoEnabled: Boolean) {
-        try {
-            val jid = JidCreate.from(recipientJid)
-            binding.contactNameText.text = jid.localpartOrNull?.toString() ?: recipientJid
-            binding.callStatusText.text = getString(R.string.calling)
+        if (sessionId != null) {
+            val jingleManager = (application as XmppApplication).let {
+                val connection = MainActivity.xmppConnectionManager?.getConnection()
+                if (connection != null) {
+                  JingleCallManager(
+                        connection,
+                        it.webRtcManager
+                    )
+                } else null
+            }
 
-            currentSession = jingleManager.initiateCall(jid, true, videoEnabled)
-            setupSessionCallbacks(currentSession!!)
+            if (jingleManager != null) {
+                if (isIncoming) {
+                    currentSession = jingleManager.acceptCall(sessionId, true, !audioOnly)
+                } else {
+                    currentSession = jingleManager.getSession(sessionId)
+                }
 
-            // Show local video
-            currentSession?.getLocalVideoTrack()?.addSink(binding.localVideoView)
+                currentSession?.let { setupSessionCallbacks(it) }
+                currentSession?.getLocalVideoTrack()?.addSink(localVideoView)
 
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed to initiate call", Toast.LENGTH_SHORT).show()
-            finish()
+                if (audioOnly) {
+                    localVideoView.visibility = View.GONE
+                    switchCameraButton.visibility = View.GONE
+                    toggleVideoButton.visibility = View.GONE
+                }
+            }
         }
     }
 
@@ -120,7 +121,7 @@ class CallActivity : AppCompatActivity() {
         session.onRemoteStreamAdded = { stream ->
             runOnUiThread {
                 val videoTrack = stream.videoTracks.firstOrNull()
-                videoTrack?.addSink(binding.remoteVideoView)
+                videoTrack?.addSink(remoteVideoView)
             }
         }
 
@@ -128,18 +129,18 @@ class CallActivity : AppCompatActivity() {
             runOnUiThread {
                 when (state) {
                     CallState.INITIATING -> {
-                        binding.callStatusText.text = getString(R.string.calling)
+                        callStatusText.text = getString(R.string.calling)
                     }
                     CallState.RINGING -> {
-                        binding.callStatusText.text = getString(R.string.ringing)
+                        callStatusText.text = getString(R.string.ringing)
                     }
                     CallState.CONNECTING -> {
-                        binding.callStatusText.text = "Connecting…"
+                        callStatusText.text = "Connecting…"
                     }
                     CallState.CONNECTED -> {
-                        binding.callStatusText.text = getString(R.string.connected_call)
-                        binding.callStatusText.postDelayed({
-                            binding.callStatusText.visibility = View.GONE
+                        callStatusText.text = getString(R.string.connected_call)
+                        callStatusText.postDelayed({
+                            callStatusText.visibility = View.GONE
                         }, 2000)
                     }
                     CallState.ENDED -> {
@@ -151,63 +152,23 @@ class CallActivity : AppCompatActivity() {
         }
     }
 
-    private fun showIncomingCallDialog(sessionId: String, callerJid: String, hasVideo: Boolean) {
-        val dialogBinding = DialogIncomingCallBinding.inflate(layoutInflater)
-        val dialog = Dialog(this)
-        dialog.setContentView(dialogBinding.root)
-        dialog.setCancelable(false)
-
-        dialogBinding.callerName.text = callerJid
-        dialogBinding.callTypeText.text = if (hasVideo) "Video Call" else "Audio Call"
-
-        dialogBinding.acceptButton.setOnClickListener {
-            dialog.dismiss()
-            acceptCall(sessionId, hasVideo)
-        }
-
-        dialogBinding.declineButton.setOnClickListener {
-            dialog.dismiss()
-            jingleManager.terminateSession(sessionId)
-            finish()
-        }
-
-        dialog.show()
-    }
-
-    private fun acceptCall(sessionId: String, videoEnabled: Boolean) {
-        currentSession = jingleManager.acceptCall(sessionId, true, videoEnabled)
-
-        if (currentSession != null) {
-            setupSessionCallbacks(currentSession!!)
-            binding.callStatusText.text = "Connecting…"
-
-            // Show local video
-            currentSession?.getLocalVideoTrack()?.addSink(binding.localVideoView)
-        } else {
-            Toast.makeText(this, "Failed to accept call", Toast.LENGTH_SHORT).show()
-            finish()
-        }
-    }
-
     private fun endCall() {
-        currentSession?.let {
-            jingleManager.terminateSession(it.sessionId)
-        }
+        currentSession?.terminate()
         finish()
     }
 
     private fun updateAudioButton() {
-        binding.toggleAudioButton.alpha = if (isAudioMuted) 0.5f else 1.0f
+        toggleAudioButton.alpha = if (isAudioMuted) 0.5f else 1.0f
     }
 
     private fun updateVideoButton() {
-        binding.toggleVideoButton.alpha = if (isVideoOff) 0.5f else 1.0f
+        toggleVideoButton.alpha = if (isVideoOff) 0.5f else 1.0f
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        binding.localVideoView.release()
-        binding.remoteVideoView.release()
+        localVideoView.release()
+        remoteVideoView.release()
         currentSession?.close()
     }
 }
