@@ -1,174 +1,220 @@
 package com.example.xmppvideocall
+
+import android.media.AudioManager
 import android.os.Bundle
-import android.view.View
-import android.view.WindowManager
+import android.widget.ImageButton
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.example.xmppvideocall.JingleSession
-import com.example.xmppvideocall.CallState
-import com.google.android.material.floatingactionbutton.FloatingActionButton
+import org.webrtc.MediaStream
+import org.webrtc.PeerConnection
+import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
-import android.widget.TextView
+import java.util.UUID
 
 class CallActivity : AppCompatActivity() {
 
     private lateinit var remoteVideoView: SurfaceViewRenderer
     private lateinit var localVideoView: SurfaceViewRenderer
-    private lateinit var callStatusText: TextView
-    private lateinit var contactNameText: TextView
-    private lateinit var toggleAudioButton: FloatingActionButton
-    private lateinit var toggleVideoButton: FloatingActionButton
-    private lateinit var switchCameraButton: FloatingActionButton
-    private lateinit var endCallButton: FloatingActionButton
+    private lateinit var tvCallStatus: TextView
+    private lateinit var btnMute: ImageButton
+    private lateinit var btnEndCall: ImageButton
+    private lateinit var btnSwitchCamera: ImageButton
 
-    private var currentSession: JingleSession? = null
-    private var isAudioMuted = false
-    private var isVideoOff = false
+    private lateinit var webRtcManager: WebRtcManager
+    private lateinit var xmppManager: XmppConnectionManager
+
+    private var calleeJid: String = ""
+    private var sessionId: String = ""
+    private var hasVideo: Boolean = false
+    private var isIncoming: Boolean = false
+    private var isMuted: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_call)
 
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Set audio mode for call
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.isSpeakerphoneOn = hasVideo
 
         initViews()
-        setupVideoViews()
-        setupUI()
-        handleIntent()
+        extractIntentData()
+        initializeManagers()
+        startCall()
     }
 
     private fun initViews() {
         remoteVideoView = findViewById(R.id.remoteVideoView)
         localVideoView = findViewById(R.id.localVideoView)
-        callStatusText = findViewById(R.id.callStatusText)
-        contactNameText = findViewById(R.id.contactNameText)
-        toggleAudioButton = findViewById(R.id.toggleAudioButton)
-        toggleVideoButton = findViewById(R.id.toggleVideoButton)
-        switchCameraButton = findViewById(R.id.switchCameraButton)
-        endCallButton = findViewById(R.id.endCallButton)
-    }
+        tvCallStatus = findViewById(R.id.tvCallStatus)
+        btnMute = findViewById(R.id.btnMute)
+        btnEndCall = findViewById(R.id.btnEndCall)
+        btnSwitchCamera = findViewById(R.id.btnSwitchCamera)
 
-    private fun setupVideoViews() {
-        val eglBase = XmppApplication.instance.webRtcManager.eglBase
-        localVideoView.init(eglBase.eglBaseContext, null)
-        remoteVideoView.init(eglBase.eglBaseContext, null)
+        btnMute.setOnClickListener { toggleMute() }
+        btnEndCall.setOnClickListener { endCall() }
+        btnSwitchCamera.setOnClickListener { switchCamera() }
 
-        localVideoView.setZOrderMediaOverlay(true)
-        localVideoView.setEnableHardwareScaler(true)
-        remoteVideoView.setEnableHardwareScaler(true)
-    }
-
-    private fun setupUI() {
-        toggleAudioButton.setOnClickListener {
-            isAudioMuted = currentSession?.toggleAudio() == false
-            updateAudioButton()
-        }
-
-        toggleVideoButton.setOnClickListener {
-            isVideoOff = currentSession?.toggleVideo() == false
-            updateVideoButton()
-            localVideoView.visibility = if (isVideoOff) View.GONE else View.VISIBLE
-        }
-
-        switchCameraButton.setOnClickListener {
-            currentSession?.switchCamera()
-        }
-
-        endCallButton.setOnClickListener {
-            endCall()
+        if (!hasVideo) {
+            localVideoView.visibility = android.view.View.GONE
+            remoteVideoView.visibility = android.view.View.GONE
+            btnSwitchCamera.isEnabled = false
         }
     }
 
-    private fun handleIntent() {
-        val sessionId = intent.getStringExtra("SESSION_ID")
-        val recipientJid = intent.getStringExtra("RECIPIENT_JID")
-        val audioOnly = intent.getBooleanExtra("AUDIO_ONLY", false)
-        val isIncoming = intent.getBooleanExtra("IS_INCOMING", false)
-
-        contactNameText.text = recipientJid ?: "Unknown"
-
-        if (sessionId != null) {
-            val jingleManager = (application as XmppApplication).let {
-                val connection = MainActivity.xmppConnectionManager?.getConnection()
-                if (connection != null) {
-                  JingleCallManager(
-                        connection,
-                        it.webRtcManager
-                    )
-                } else null
-            }
-
-            if (jingleManager != null) {
-                if (isIncoming) {
-                    currentSession = jingleManager.acceptCall(sessionId, true, !audioOnly)
-                } else {
-                    currentSession = jingleManager.getSession(sessionId)
-                }
-
-                currentSession?.let { setupSessionCallbacks(it) }
-                currentSession?.getLocalVideoTrack()?.addSink(localVideoView)
-
-                if (audioOnly) {
-                    localVideoView.visibility = View.GONE
-                    switchCameraButton.visibility = View.GONE
-                    toggleVideoButton.visibility = View.GONE
-                }
-            }
-        }
+    private fun extractIntentData() {
+        calleeJid = intent.getStringExtra(MainActivity.EXTRA_CALLEE_JID) ?: ""
+        sessionId = intent.getStringExtra(MainActivity.EXTRA_SESSION_ID) ?: UUID.randomUUID().toString()
+        hasVideo = intent.getBooleanExtra(MainActivity.EXTRA_HAS_VIDEO, false)
+        isIncoming = intent.getBooleanExtra(MainActivity.EXTRA_IS_INCOMING, false)
     }
 
-    private fun setupSessionCallbacks(session: JingleSession) {
-        session.onRemoteStreamAdded = { stream ->
+    private fun initializeManagers() {
+        webRtcManager = WebRtcManager(this)
+        xmppManager = XmppConnectionManager() // Get singleton or shared instance in real app
+
+        setupWebRtcCallbacks()
+        setupXmppCallbacks()
+    }
+
+    private fun setupWebRtcCallbacks() {
+        webRtcManager.onIceCandidate = { candidate ->
+            xmppManager.sendIceCandidate(
+                calleeJid,
+                sessionId,
+                candidate.sdp,
+                candidate.sdpMid,
+                candidate.sdpMLineIndex
+            )
+        }
+
+        webRtcManager.onAddStream = { stream ->
             runOnUiThread {
-                val videoTrack = stream.videoTracks.firstOrNull()
-                videoTrack?.addSink(remoteVideoView)
+                if (stream.videoTracks.size > 0 && hasVideo) {
+                    val remoteVideoTrack = stream.videoTracks[0]
+                    remoteVideoTrack.addSink(remoteVideoView)
+                }
+                tvCallStatus.text = "Connected"
             }
         }
 
-        session.onCallStateChanged = { state ->
+        webRtcManager.onIceConnectionChange = { state ->
             runOnUiThread {
                 when (state) {
-                    CallState.INITIATING -> {
-                        callStatusText.text = getString(R.string.calling)
+                    PeerConnection.IceConnectionState.CHECKING -> tvCallStatus.text = "Connecting..."
+                    PeerConnection.IceConnectionState.CONNECTED -> tvCallStatus.text = "Connected"
+                    PeerConnection.IceConnectionState.COMPLETED -> tvCallStatus.text = "Connected"
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        tvCallStatus.text = "Connection Failed"
+                        Toast.makeText(this, "Call failed", Toast.LENGTH_SHORT).show()
                     }
-                    CallState.RINGING -> {
-                        callStatusText.text = getString(R.string.ringing)
-                    }
-                    CallState.CONNECTING -> {
-                        callStatusText.text = "Connecting…"
-                    }
-                    CallState.CONNECTED -> {
-                        callStatusText.text = getString(R.string.connected_call)
-                        callStatusText.postDelayed({
-                            callStatusText.visibility = View.GONE
-                        }, 2000)
-                    }
-                    CallState.ENDED -> {
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        tvCallStatus.text = "Disconnected"
                         finish()
                     }
+                    PeerConnection.IceConnectionState.CLOSED -> finish()
                     else -> {}
                 }
             }
         }
     }
 
+    private fun setupXmppCallbacks() {
+        xmppManager.onCallAccepted = { sid, remoteSdp ->
+            if (sid == sessionId) {
+                runOnUiThread {
+                    webRtcManager.setRemoteDescription(remoteSdp, SessionDescription.Type.ANSWER)
+                    tvCallStatus.text = "Call Accepted"
+                }
+            }
+        }
+
+        xmppManager.onIceCandidate = { sid, sdpMid, candidateSdp, sdpMLineIndex, _ ->
+            if (sid == sessionId) {
+                runOnUiThread {
+                    webRtcManager.addIceCandidate(sdpMid, sdpMLineIndex, candidateSdp)
+                }
+            }
+        }
+
+        xmppManager.onCallTerminated = { sid ->
+            if (sid == sessionId) {
+                runOnUiThread {
+                    Toast.makeText(this, "Call ended by remote", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            }
+        }
+    }
+
+    private fun startCall() {
+        webRtcManager.initialize()
+        webRtcManager.createPeerConnection()
+
+        if (hasVideo) {
+            webRtcManager.startLocalMedia(true, localVideoView)
+        } else {
+            webRtcManager.startLocalMedia(false, null)
+        }
+
+        if (isIncoming) {
+            handleIncomingCall()
+        } else {
+            handleOutgoingCall()
+        }
+    }
+
+    private fun handleOutgoingCall() {
+        tvCallStatus.text = "Calling..."
+
+        webRtcManager.createOffer { sdp ->
+            runOnUiThread {
+                xmppManager.sendSessionInitiate(calleeJid, sessionId, sdp.description, hasVideo)
+            }
+        }
+    }
+
+    private fun handleIncomingCall() {
+        tvCallStatus.text = "Accepting call..."
+
+        // Get remote SDP from intent or wait for it via XMPP callback
+        val remoteSdp = intent.getStringExtra(MainActivity.EXTRA_REMOTE_SDP)
+        if (remoteSdp != null) {
+            webRtcManager.setRemoteDescription(remoteSdp, SessionDescription.Type.OFFER)
+        }
+
+        webRtcManager.createAnswer { sdp ->
+            runOnUiThread {
+                xmppManager.sendSessionAccept(calleeJid, sessionId, sdp.description)
+            }
+        }
+    }
+
+    private fun toggleMute() {
+        isMuted = !webRtcManager.toggleMute()
+        btnMute.alpha = if (isMuted) 0.5f else 1.0f
+        Toast.makeText(this, if (isMuted) "Muted" else "Unmuted", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun switchCamera() {
+        if (hasVideo) {
+            webRtcManager.switchCamera()
+        }
+    }
+
     private fun endCall() {
-        currentSession?.terminate()
+        xmppManager.sendSessionTerminate(calleeJid, sessionId)
         finish()
-    }
-
-    private fun updateAudioButton() {
-        toggleAudioButton.alpha = if (isAudioMuted) 0.5f else 1.0f
-    }
-
-    private fun updateVideoButton() {
-        toggleVideoButton.alpha = if (isVideoOff) 0.5f else 1.0f
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        localVideoView.release()
-        remoteVideoView.release()
-        currentSession?.close()
+        webRtcManager.release()
+
+        // Reset audio mode
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_NORMAL
     }
 }

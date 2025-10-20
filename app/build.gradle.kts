@@ -63,6 +63,8 @@ dependencies {
         exclude(group = "xpp3")
     }
 
+    implementation ("org.igniterealtime.smack:smack-experimental:4.4.6")
+
     // WebRTC
     implementation ("io.getstream:stream-webrtc-android:1.3.8")
 

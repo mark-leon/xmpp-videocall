@@ -4,150 +4,212 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import com.example.xmppvideocall.XmppConnectionManager
-import com.google.android.material.textfield.TextInputEditText
-import kotlinx.coroutines.launch
-import android.widget.Button
-import android.widget.TextView
-import android.widget.ProgressBar
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var usernameInput: TextInputEditText
-    private lateinit var passwordInput: TextInputEditText
-    private lateinit var serverInput: TextInputEditText
-    private lateinit var portInput: TextInputEditText
-    private lateinit var loginButton: Button
-    private lateinit var statusText: TextView
-    private lateinit var progressBar: ProgressBar
+    private lateinit var tvStatus: TextView
+    private lateinit var etServer: EditText
+    private lateinit var etUsername: EditText
+    private lateinit var etPassword: EditText
+    private lateinit var btnConnect: Button
+    private lateinit var etCalleeJid: EditText
+    private lateinit var btnAudioCall: Button
+    private lateinit var btnVideoCall: Button
 
     private val xmppManager = XmppConnectionManager()
+    private var isConnected = false
 
-    private val PERMISSIONS_REQUEST_CODE = 100
-    private val REQUIRED_PERMISSIONS = arrayOf(
-        Manifest.permission.CAMERA,
-        Manifest.permission.RECORD_AUDIO
-    )
+    companion object {
+        const val PERMISSION_REQUEST_CODE = 100
+        const val EXTRA_CALLEE_JID = "callee_jid"
+        const val EXTRA_SESSION_ID = "session_id"
+        const val EXTRA_HAS_VIDEO = "has_video"
+        const val EXTRA_IS_INCOMING = "is_incoming"
+        const val EXTRA_REMOTE_SDP = "remote_sdp"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         initViews()
+        setupXmppCallbacks()
         checkPermissions()
-        setupUI()
-        setupConnectionManager()
     }
 
     private fun initViews() {
-        usernameInput = findViewById(R.id.usernameInput)
-        passwordInput = findViewById(R.id.passwordInput)
-        serverInput = findViewById(R.id.serverInput)
-        portInput = findViewById(R.id.portInput)
-        loginButton = findViewById(R.id.loginButton)
-        statusText = findViewById(R.id.statusText)
-        progressBar = findViewById(R.id.progressBar)
+        tvStatus = findViewById(R.id.tvStatus)
+        etServer = findViewById(R.id.etServer)
+        etUsername = findViewById(R.id.etUsername)
+        etPassword = findViewById(R.id.etPassword)
+        etServer.setText("ejabberd.arafinahmed.com")
+        etUsername.setText("leion")
+        etPassword.setText("123")
+
+        btnConnect = findViewById(R.id.btnConnect)
+        etCalleeJid = findViewById(R.id.etCalleeJid)
+        btnAudioCall = findViewById(R.id.btnAudioCall)
+        btnVideoCall = findViewById(R.id.btnVideoCall)
+
+        btnConnect.setOnClickListener {
+            if (isConnected) {
+                disconnect()
+            } else {
+                connect()
+            }
+        }
+
+        btnAudioCall.setOnClickListener {
+            startCall(false)
+        }
+
+        btnVideoCall.setOnClickListener {
+            startCall(true)
+        }
+    }
+
+    private fun setupXmppCallbacks() {
+        xmppManager.onConnectionChanged = { connected ->
+            runOnUiThread {
+                isConnected = connected
+                updateConnectionUI(connected)
+            }
+        }
+
+        xmppManager.onIncomingCall = { fromJid, sessionId, hasVideo ->
+            runOnUiThread {
+                showIncomingCallDialog(fromJid, sessionId, hasVideo)
+            }
+        }
     }
 
     private fun checkPermissions() {
-        val permissionsToRequest = REQUIRED_PERMISSIONS.filter {
+        val permissions = arrayOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        )
+
+        val missingPermissions = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        if (permissionsToRequest.isNotEmpty()) {
+        if (missingPermissions.isNotEmpty()) {
             ActivityCompat.requestPermissions(
                 this,
-                permissionsToRequest.toTypedArray(),
-                PERMISSIONS_REQUEST_CODE
+                missingPermissions.toTypedArray(),
+                PERMISSION_REQUEST_CODE
             )
         }
     }
 
-    private fun setupUI() {
-        usernameInput.setText("leion")
-        passwordInput.setText("123")
-
-        loginButton.setOnClickListener {
-            val username = usernameInput.text.toString()
-            val password = passwordInput.text.toString()
-            val server = serverInput.text.toString()
-            val port = portInput.text.toString().toIntOrNull() ?: 5222
-
-            if (username.isEmpty() || password.isEmpty() || server.isEmpty()) {
-                Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            connectToXmpp(username, password, server, port)
-        }
-    }
-
-    private fun setupConnectionManager() {
-        xmppManager.onConnectionStateChanged = { state ->
-            runOnUiThread {
-                when (state) {
-                    XmppConnectionManager.ConnectionState.CONNECTING -> {
-                        statusText.text = getString(R.string.connecting)
-                        progressBar.visibility = View.VISIBLE
-                        loginButton.isEnabled = false
-                    }
-                    XmppConnectionManager.ConnectionState.AUTHENTICATED -> {
-                        statusText.text = getString(R.string.connected)
-                        progressBar.visibility = View.GONE
-                        loginButton.isEnabled = true
-
-                        xmppConnectionManager = xmppManager
-                        val intent = Intent(this, HomeActivity::class.java)
-                        intent.putExtra("USERNAME", usernameInput.text.toString())
-                        startActivity(intent)
-                    }
-                    XmppConnectionManager.ConnectionState.ERROR -> {
-                        statusText.text = "Connection failed"
-                        progressBar.visibility = View.GONE
-                        loginButton.isEnabled = true
-                        Toast.makeText(this, "Connection failed", Toast.LENGTH_SHORT).show()
-                    }
-                    XmppConnectionManager.ConnectionState.DISCONNECTED -> {
-                        statusText.text = getString(R.string.disconnected)
-                        progressBar.visibility = View.GONE
-                        loginButton.isEnabled = true
-                    }
-                    else -> {}
-                }
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            if (!allGranted) {
+                Toast.makeText(this, "Permissions required for calling", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    private fun connectToXmpp(username: String, password: String, server: String, port: Int) {
-        lifecycleScope.launch {
-            val result = xmppManager.connect(username, password, server, port)
+    private fun connect() {
+        val server = etServer.text.toString().trim()
+        val username = etUsername.text.toString().trim()
+        val password = etPassword.text.toString().trim()
 
-            if (result.isFailure) {
-                runOnUiThread {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Failed: ${result.exceptionOrNull()?.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
+        if (server.isEmpty() || username.isEmpty() || password.isEmpty()) {
+            Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
+            return
         }
+
+        tvStatus.text = "Status: Connecting..."
+        xmppManager.connect(server, username, password)
+    }
+
+    private fun disconnect() {
+        xmppManager.disconnect()
+        isConnected = false
+        updateConnectionUI(false)
+    }
+
+    private fun updateConnectionUI(connected: Boolean) {
+        if (connected) {
+            tvStatus.text = "Status: Connected (${xmppManager.getOwnJid()})"
+            btnConnect.text = "Disconnect"
+            etCalleeJid.isEnabled = true
+            btnAudioCall.isEnabled = true
+            btnVideoCall.isEnabled = true
+
+            etServer.isEnabled = false
+            etUsername.isEnabled = false
+            etPassword.isEnabled = false
+        } else {
+            tvStatus.text = "Status: Disconnected"
+            btnConnect.text = "Connect"
+            etCalleeJid.isEnabled = false
+            btnAudioCall.isEnabled = false
+            btnVideoCall.isEnabled = false
+
+            etServer.isEnabled = true
+            etUsername.isEnabled = true
+            etPassword.isEnabled = true
+        }
+    }
+
+    private fun startCall(hasVideo: Boolean) {
+        val calleeJid = etCalleeJid.text.toString().trim()
+
+        if (calleeJid.isEmpty()) {
+            Toast.makeText(this, "Please enter callee JID", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(this, CallActivity::class.java).apply {
+            putExtra(EXTRA_CALLEE_JID, calleeJid)
+            putExtra(EXTRA_HAS_VIDEO, hasVideo)
+            putExtra(EXTRA_IS_INCOMING, false)
+        }
+        startActivity(intent)
+    }
+
+    private fun showIncomingCallDialog(fromJid: String, sessionId: String, hasVideo: Boolean) {
+        val callType = if (hasVideo) "Video" else "Audio"
+
+        AlertDialog.Builder(this)
+            .setTitle("Incoming $callType Call")
+            .setMessage("From: $fromJid")
+            .setPositiveButton("Accept") { dialog, _ ->
+                val intent = Intent(this, CallActivity::class.java).apply {
+                    putExtra(EXTRA_CALLEE_JID, fromJid)
+                    putExtra(EXTRA_SESSION_ID, sessionId)
+                    putExtra(EXTRA_HAS_VIDEO, hasVideo)
+                    putExtra(EXTRA_IS_INCOMING, true)
+                }
+                startActivity(intent)
+                dialog.dismiss()
+            }
+            .setNegativeButton("Decline") { dialog, _ ->
+                xmppManager.sendSessionTerminate(fromJid, sessionId)
+                dialog.dismiss()
+            }
+            .setCancelable(false)
+            .show()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isFinishing) {
-            xmppManager.cleanup()
-        }
-    }
-
-    companion object {
-        var xmppConnectionManager: XmppConnectionManager? = null
+        xmppManager.disconnect()
     }
 }
