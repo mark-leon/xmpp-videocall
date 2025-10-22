@@ -27,11 +27,11 @@ class XmppConnectionManager {
         scope.launch {
             try {
                 val config = XMPPTCPConnectionConfiguration.builder()
-                    .setXmppDomain("ejabberd.arafinahmed.com")
-                    .setHost("ejabberd.arafinahmed.com")
+                    .setXmppDomain(server)
+                    .setHost("192.168.125.8")
                     .setPort(5222)
                     .setUsernameAndPassword(username, password)
-                    .setSecurityMode(ConnectionConfiguration.SecurityMode.ifpossible)
+                    .setSecurityMode(ConnectionConfiguration.SecurityMode.disabled)
                     .setCompressionEnabled(false)
                     .build()
 

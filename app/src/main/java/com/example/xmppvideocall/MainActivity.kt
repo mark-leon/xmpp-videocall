@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -50,7 +51,7 @@ class MainActivity : AppCompatActivity() {
         etServer = findViewById(R.id.etServer)
         etUsername = findViewById(R.id.etUsername)
         etPassword = findViewById(R.id.etPassword)
-        etServer.setText("ejabberd.arafinahmed.com")
+        etServer.setText("localhost")
         etUsername.setText("leion")
         etPassword.setText("123")
 
@@ -170,6 +171,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCall(hasVideo: Boolean) {
         val calleeJid = etCalleeJid.text.toString().trim()
+        Log.d("MainActivity", "Callee JID: $calleeJid")
 
         if (calleeJid.isEmpty()) {
             Toast.makeText(this, "Please enter callee JID", Toast.LENGTH_SHORT).show()

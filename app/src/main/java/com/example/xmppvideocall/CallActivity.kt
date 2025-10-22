@@ -2,6 +2,7 @@ package com.example.xmppvideocall
 
 import android.media.AudioManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
@@ -90,32 +91,23 @@ class CallActivity : AppCompatActivity() {
             )
         }
 
-        webRtcManager.onAddStream = { stream ->
+        webRtcManager.onTrack = { receiver, _ ->
             runOnUiThread {
-                if (stream.videoTracks.size > 0 && hasVideo) {
-                    val remoteVideoTrack = stream.videoTracks[0]
-                    remoteVideoTrack.addSink(remoteVideoView)
+                val track = receiver.track()
+                if (track is org.webrtc.VideoTrack) {
+                    track.addSink(remoteVideoView)
                 }
-                tvCallStatus.text = "Connected"
             }
         }
 
         webRtcManager.onIceConnectionChange = { state ->
             runOnUiThread {
-                when (state) {
-                    PeerConnection.IceConnectionState.CHECKING -> tvCallStatus.text = "Connecting..."
-                    PeerConnection.IceConnectionState.CONNECTED -> tvCallStatus.text = "Connected"
-                    PeerConnection.IceConnectionState.COMPLETED -> tvCallStatus.text = "Connected"
-                    PeerConnection.IceConnectionState.FAILED -> {
-                        tvCallStatus.text = "Connection Failed"
-                        Toast.makeText(this, "Call failed", Toast.LENGTH_SHORT).show()
-                    }
-                    PeerConnection.IceConnectionState.DISCONNECTED -> {
-                        tvCallStatus.text = "Disconnected"
-                        finish()
-                    }
-                    PeerConnection.IceConnectionState.CLOSED -> finish()
-                    else -> {}
+                tvCallStatus.text = "ICE: $state"
+                if (state == PeerConnection.IceConnectionState.DISCONNECTED ||
+                    state == PeerConnection.IceConnectionState.FAILED ||
+                    state == PeerConnection.IceConnectionState.CLOSED
+                ) {
+                    endCall()
                 }
             }
         }
@@ -150,6 +142,7 @@ class CallActivity : AppCompatActivity() {
     }
 
     private fun startCall() {
+        Log.d("CallActivity", "Starting call with callee: $calleeJid")
         webRtcManager.initialize()
         webRtcManager.createPeerConnection()
 
@@ -177,6 +170,7 @@ class CallActivity : AppCompatActivity() {
     }
 
     private fun handleIncomingCall() {
+        Log.d("CallActivity", "Incoming call from: $calleeJid")
         tvCallStatus.text = "Accepting call..."
 
         // Get remote SDP from intent or wait for it via XMPP callback

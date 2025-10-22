@@ -53,6 +53,7 @@ dependencies {
         exclude(group = "xpp3")
     }
 
+
     implementation("org.igniterealtime.smack:smack-tcp:4.4.6") {
         exclude(group = "xpp3")
     }

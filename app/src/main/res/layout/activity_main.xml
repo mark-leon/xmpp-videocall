@@ -16,7 +16,7 @@
 
     <EditText
         android:id="@+id/etServer"
-        android:text="ejabberd.arafinahmed.com"
+        android:text="localhost"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="XMPP Server (e.g., xmpp.example.com)"
