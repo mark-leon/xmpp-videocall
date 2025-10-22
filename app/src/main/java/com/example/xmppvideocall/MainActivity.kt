@@ -1,114 +1,218 @@
 package com.example.xmppvideocall
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.util.Log
-import android.widget.Button
-import android.widget.EditText
-import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.example.xmppvideocall.databinding.ActivityMainBinding
+import com.example.xmppcall.handler.JingleMessageHandler
+import org.jivesoftware.smack.packet.Message
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var tvStatus: TextView
-    private lateinit var etServer: EditText
-    private lateinit var etUsername: EditText
-    private lateinit var etPassword: EditText
-    private lateinit var btnConnect: Button
-    private lateinit var etCalleeJid: EditText
-    private lateinit var btnAudioCall: Button
-    private lateinit var btnVideoCall: Button
-
-    private val xmppManager = XmppConnectionManager()
-    private var isConnected = false
+    private lateinit var binding: ActivityMainBinding
+    private var xmppManager: XmppConnectionManager? = null
+    private var currentCallId: String? = null
 
     companion object {
-        const val PERMISSION_REQUEST_CODE = 100
-        const val EXTRA_CALLEE_JID = "callee_jid"
-        const val EXTRA_SESSION_ID = "session_id"
-        const val EXTRA_HAS_VIDEO = "has_video"
-        const val EXTRA_IS_INCOMING = "is_incoming"
-        const val EXTRA_REMOTE_SDP = "remote_sdp"
+        private const val PERMISSION_REQUEST_CODE = 100
+        private val REQUIRED_PERMISSIONS = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.INTERNET,
+            Manifest.permission.ACCESS_NETWORK_STATE
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-        initViews()
-        setupXmppCallbacks()
         checkPermissions()
-    }
-
-    private fun initViews() {
-        tvStatus = findViewById(R.id.tvStatus)
-        etServer = findViewById(R.id.etServer)
-        etUsername = findViewById(R.id.etUsername)
-        etPassword = findViewById(R.id.etPassword)
-        etServer.setText("localhost")
-        etUsername.setText("leion")
-        etPassword.setText("123")
-
-        btnConnect = findViewById(R.id.btnConnect)
-        etCalleeJid = findViewById(R.id.etCalleeJid)
-        btnAudioCall = findViewById(R.id.btnAudioCall)
-        btnVideoCall = findViewById(R.id.btnVideoCall)
-
-        btnConnect.setOnClickListener {
-            if (isConnected) {
-                disconnect()
-            } else {
-                connect()
-            }
-        }
-
-        btnAudioCall.setOnClickListener {
-            startCall(false)
-        }
-
-        btnVideoCall.setOnClickListener {
-            startCall(true)
-        }
-    }
-
-    private fun setupXmppCallbacks() {
-        xmppManager.onConnectionChanged = { connected ->
-            runOnUiThread {
-                isConnected = connected
-                updateConnectionUI(connected)
-            }
-        }
-
-        xmppManager.onIncomingCall = { fromJid, sessionId, hasVideo ->
-            runOnUiThread {
-                showIncomingCallDialog(fromJid, sessionId, hasVideo)
-            }
-        }
+        setupUI()
+        setupJingleHandler()
     }
 
     private fun checkPermissions() {
-        val permissions = arrayOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO
-        )
-
-        val missingPermissions = permissions.filter {
+        val permissionsToRequest = REQUIRED_PERMISSIONS.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
-        if (missingPermissions.isNotEmpty()) {
+        if (permissionsToRequest.isNotEmpty()) {
             ActivityCompat.requestPermissions(
                 this,
-                missingPermissions.toTypedArray(),
+                permissionsToRequest.toTypedArray(),
                 PERMISSION_REQUEST_CODE
             )
         }
+    }
+
+    private fun setupUI() {
+        binding.btnConnect.setOnClickListener {
+            connectToXmpp()
+        }
+
+        binding.btnDisconnect.setOnClickListener {
+            disconnectFromXmpp()
+        }
+
+        binding.btnAnswer.setOnClickListener {
+            answerCall()
+        }
+
+        binding.btnReject.setOnClickListener {
+            rejectCall()
+        }
+
+        binding.btnEndCall.setOnClickListener {
+            endCall()
+        }
+
+        updateUIState(false)
+    }
+
+    private fun setupJingleHandler() {
+        JingleMessageHandler.setCallback(object : JingleMessageHandler.JingleCallback {
+            override fun onSdpReceived(sdp: String, action: String) {
+                runOnUiThread {
+                    binding.tvStatus.text = "SDP Received: $action"
+                    binding.tvSdpInfo.text = sdp
+                }
+            }
+
+            override fun onIceCandidatesReceived(candidates: List<Candidate>) {
+                runOnUiThread {
+                    val candidateInfo = candidates.joinToString("\n") {
+                        "IP: ${it.ip}:${it.port} Type: ${it.type}"
+                    }
+                    binding.tvIceCandidates.text = candidateInfo
+                }
+            }
+        })
+    }
+
+    private fun connectToXmpp() {
+        val username = binding.etUsername.text.toString()
+        val password = binding.etPassword.text.toString()
+        val domain = binding.etDomain.text.toString()
+
+        if (username.isEmpty() || password.isEmpty() || domain.isEmpty()) {
+            Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        binding.tvStatus.text = "Connecting..."
+
+        xmppManager = XmppConnectionManager(username, password, domain)
+        xmppManager?.setConnectionListener(object : XmppConnectionManager.ConnectionListener {
+            override fun onConnected() {
+                runOnUiThread {
+                    binding.tvStatus.text = "Connected"
+                    updateUIState(true)
+                    Toast.makeText(this@MainActivity, "Connected successfully", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            override fun onDisconnected() {
+                runOnUiThread {
+                    binding.tvStatus.text = "Disconnected"
+                    updateUIState(false)
+                }
+            }
+
+            override fun onError(error: String) {
+                runOnUiThread {
+                    binding.tvStatus.text = "Error: $error"
+                    Toast.makeText(this@MainActivity, "Error: $error", Toast.LENGTH_LONG).show()
+                }
+            }
+
+            override fun onMessageReceived(message: Message, elementType: String) {
+                runOnUiThread {
+                    handleIncomingMessage(message, elementType)
+                }
+            }
+        })
+
+        xmppManager?.connect()
+    }
+
+    private fun disconnectFromXmpp() {
+        xmppManager?.disconnect()
+        xmppManager = null
+        binding.tvStatus.text = "Disconnected"
+        updateUIState(false)
+    }
+
+    private fun handleIncomingMessage(message: Message, elementType: String) {
+        when (elementType) {
+            "propose" -> {
+                val proposeElement = message.getExtension<org.jivesoftware.smack.packet.StandardExtensionElement>(
+                    "propose",
+                    "urn:xmpp:jingle-message:0"
+                )
+
+                currentCallId = proposeElement?.getAttributeValue("id")
+
+                binding.tvStatus.text = "Incoming call from: ${message.from}"
+                binding.llIncomingCall.visibility = android.view.View.VISIBLE
+                binding.tvCallerInfo.text = "Caller: ${message.from}"
+            }
+
+            "ringing" -> {
+                binding.tvStatus.text = "Call ringing..."
+            }
+            "accept" -> {
+                binding.tvStatus.text = "Call accepted"
+                binding.llIncomingCall.visibility = android.view.View.GONE
+                binding.llCallControls.visibility = android.view.View.VISIBLE
+            }
+            "proceed" -> {
+                binding.tvStatus.text = "Call proceeding..."
+            }
+        }
+    }
+
+    private fun answerCall() {
+        currentCallId?.let { callId ->
+            xmppManager?.sendAcceptResponse(
+                binding.tvCallerInfo.text.toString().removePrefix("Caller: "),
+                callId
+            )
+            binding.llIncomingCall.visibility = android.view.View.GONE
+            binding.llCallControls.visibility = android.view.View.VISIBLE
+            binding.tvStatus.text = "Call in progress"
+        }
+    }
+
+    private fun rejectCall() {
+        currentCallId = null
+        binding.llIncomingCall.visibility = android.view.View.GONE
+        binding.tvStatus.text = "Call rejected"
+    }
+
+    private fun endCall() {
+        currentCallId = null
+        binding.llCallControls.visibility = android.view.View.GONE
+        binding.tvStatus.text = "Call ended"
+        binding.tvSdpInfo.text = ""
+        binding.tvIceCandidates.text = ""
+    }
+
+    private fun updateUIState(connected: Boolean) {
+        binding.btnConnect.isEnabled = !connected
+        binding.btnDisconnect.isEnabled = connected
+        binding.etUsername.isEnabled = !connected
+        binding.etPassword.isEnabled = !connected
+        binding.etDomain.isEnabled = !connected
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        xmppManager?.disconnect()
     }
 
     override fun onRequestPermissionsResult(
@@ -120,98 +224,8 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == PERMISSION_REQUEST_CODE) {
             val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             if (!allGranted) {
-                Toast.makeText(this, "Permissions required for calling", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Permissions required for audio calls", Toast.LENGTH_LONG).show()
             }
         }
-    }
-
-    private fun connect() {
-        val server = etServer.text.toString().trim()
-        val username = etUsername.text.toString().trim()
-        val password = etPassword.text.toString().trim()
-
-        if (server.isEmpty() || username.isEmpty() || password.isEmpty()) {
-            Toast.makeText(this, "Please fill all fields", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        tvStatus.text = "Status: Connecting..."
-        xmppManager.connect(server, username, password)
-    }
-
-    private fun disconnect() {
-        xmppManager.disconnect()
-        isConnected = false
-        updateConnectionUI(false)
-    }
-
-    private fun updateConnectionUI(connected: Boolean) {
-        if (connected) {
-            tvStatus.text = "Status: Connected (${xmppManager.getOwnJid()})"
-            btnConnect.text = "Disconnect"
-            etCalleeJid.isEnabled = true
-            btnAudioCall.isEnabled = true
-            btnVideoCall.isEnabled = true
-
-            etServer.isEnabled = false
-            etUsername.isEnabled = false
-            etPassword.isEnabled = false
-        } else {
-            tvStatus.text = "Status: Disconnected"
-            btnConnect.text = "Connect"
-            etCalleeJid.isEnabled = false
-            btnAudioCall.isEnabled = false
-            btnVideoCall.isEnabled = false
-
-            etServer.isEnabled = true
-            etUsername.isEnabled = true
-            etPassword.isEnabled = true
-        }
-    }
-
-    private fun startCall(hasVideo: Boolean) {
-        val calleeJid = etCalleeJid.text.toString().trim()
-        Log.d("MainActivity", "Callee JID: $calleeJid")
-
-        if (calleeJid.isEmpty()) {
-            Toast.makeText(this, "Please enter callee JID", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val intent = Intent(this, CallActivity::class.java).apply {
-            putExtra(EXTRA_CALLEE_JID, calleeJid)
-            putExtra(EXTRA_HAS_VIDEO, hasVideo)
-            putExtra(EXTRA_IS_INCOMING, false)
-        }
-        startActivity(intent)
-    }
-
-    private fun showIncomingCallDialog(fromJid: String, sessionId: String, hasVideo: Boolean) {
-        val callType = if (hasVideo) "Video" else "Audio"
-
-        AlertDialog.Builder(this)
-            .setTitle("Incoming $callType Call")
-            .setMessage("From: $fromJid")
-            .setPositiveButton("Accept") { dialog, _ ->
-                val intent = Intent(this, CallActivity::class.java).apply {
-                    putExtra(EXTRA_CALLEE_JID, fromJid)
-                    putExtra(EXTRA_SESSION_ID, sessionId)
-                    putExtra(EXTRA_HAS_VIDEO, hasVideo)
-                    putExtra(EXTRA_IS_INCOMING, true)
-                }
-                startActivity(intent)
-                dialog.dismiss()
-            }
-            .setNegativeButton("Decline") { dialog, _ ->
-                xmppManager.sendSessionTerminate(fromJid, sessionId)
-                dialog.dismiss()
-            }
-            .setCancelable(false)
-            .show()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        xmppManager.disconnect()
     }
 }

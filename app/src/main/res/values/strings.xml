@@ -1,4 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">XMPP Call</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="answer">Answer</string>
+    <string name="reject">Reject</string>
+    <string name="end_call">End Call</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="domain">Domain</string>
+    <string name="status">Status</string>
+    <string name="not_connected">Not connected</string>
+    <string name="connected">Connected</string>
+    <string name="incoming_call">Incoming Call</string>
+    <string name="call_in_progress">Call in Progress</string>
 </resources>
