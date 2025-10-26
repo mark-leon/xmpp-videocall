@@ -1,14 +1,7 @@
-package com.example.xmppvideocall.parser
+package com.example.xmppvideocall
 
 
-import com.example.xmppcall.model.Parameter
-import com.example.xmppvideocall.Candidate
-import com.example.xmppvideocall.Content
-import com.example.xmppvideocall.Description
-import com.example.xmppvideocall.Group
-import com.example.xmppvideocall.JingleMessage
-import com.example.xmppvideocall.PayloadType
-import com.example.xmppvideocall.Transport
+
 import org.w3c.dom.Element
 import org.xml.sax.InputSource
 import java.io.StringReader

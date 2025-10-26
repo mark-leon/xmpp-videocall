@@ -1,6 +1,5 @@
-package com.example.xmppcall.utils
+package com.example.xmppvideocall
 
-import com.example.xmppvideocall.JingleMessage
 
 object SDPBuilder {
 

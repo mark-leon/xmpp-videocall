@@ -1,10 +1,9 @@
-package com.example.xmppcall.handler
+package com.example.xmppvideocall
+
 
 import android.util.Log
-import com.example.xmppcall.utils.SDPBuilder
-import com.example.xmppvideocall.Candidate
-import com.example.xmppvideocall.Transport
-import com.example.xmppvideocall.parser.JingleIQParser
+
+
 import org.jivesoftware.smack.packet.IQ
 import org.jivesoftware.smack.packet.UnparsedIQ
 

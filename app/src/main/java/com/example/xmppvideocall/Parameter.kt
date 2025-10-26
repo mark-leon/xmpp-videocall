@@ -1,7 +1,8 @@
 
-package com.example.xmppcall.model
+package com.example.xmppvideocall
 
-// Parameter.kt
+
+
 data class Parameter(
     var name: String = "",
     var value: String = ""

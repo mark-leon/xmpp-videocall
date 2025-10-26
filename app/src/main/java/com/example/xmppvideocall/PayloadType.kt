@@ -1,6 +1,5 @@
 package com.example.xmppvideocall
 
-import com.example.xmppcall.model.Parameter
 
 data class PayloadType(
     var name: String = "",

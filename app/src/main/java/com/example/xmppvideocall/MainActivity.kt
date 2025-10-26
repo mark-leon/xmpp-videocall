@@ -1,14 +1,17 @@
 package com.example.xmppvideocall
 
+
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.xmppvideocall.databinding.ActivityMainBinding
-import com.example.xmppcall.handler.JingleMessageHandler
+
 import org.jivesoftware.smack.packet.Message
 
 class MainActivity : AppCompatActivity() {
@@ -16,6 +19,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private var xmppManager: XmppConnectionManager? = null
     private var currentCallId: String? = null
+    private var currentPeerJid: String? = null
+    private var callStartTime: Long = 0
+    private var callDurationHandler: Handler? = null
+    private var callDurationRunnable: Runnable? = null
+    private var isMuted = false
+    private var isSpeakerOn = false
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
@@ -59,6 +68,10 @@ class MainActivity : AppCompatActivity() {
             disconnectFromXmpp()
         }
 
+        binding.btnStartCall.setOnClickListener {
+            startOutgoingCall()
+        }
+
         binding.btnAnswer.setOnClickListener {
             answerCall()
         }
@@ -71,6 +84,14 @@ class MainActivity : AppCompatActivity() {
             endCall()
         }
 
+        binding.btnMute.setOnClickListener {
+            toggleMute()
+        }
+
+        binding.btnSpeaker.setOnClickListener {
+            toggleSpeaker()
+        }
+
         updateUIState(false)
     }
 
@@ -80,6 +101,11 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.tvStatus.text = "SDP Received: $action"
                     binding.tvSdpInfo.text = sdp
+
+                    if (action == "session-initiate") {
+                        // Call is being established
+                        showCallInProgress()
+                    }
                 }
             }
 
@@ -110,7 +136,7 @@ class MainActivity : AppCompatActivity() {
         xmppManager?.setConnectionListener(object : XmppConnectionManager.ConnectionListener {
             override fun onConnected() {
                 runOnUiThread {
-                    binding.tvStatus.text = "Connected"
+                    binding.tvStatus.text = "Connected - Ready to make calls"
                     updateUIState(true)
                     Toast.makeText(this@MainActivity, "Connected successfully", Toast.LENGTH_SHORT).show()
                 }
@@ -135,6 +161,22 @@ class MainActivity : AppCompatActivity() {
                     handleIncomingMessage(message, elementType)
                 }
             }
+
+            override fun onCallInitiated(sessionId: String) {
+                runOnUiThread {
+                    currentCallId = sessionId
+                    binding.tvStatus.text = "Calling..."
+                    Toast.makeText(this@MainActivity, "Call initiated", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            override fun onCallAccepted(sessionId: String) {
+                runOnUiThread {
+                    binding.tvStatus.text = "Call connected"
+                    showCallInProgress()
+                    startCallDuration()
+                }
+            }
         })
 
         xmppManager?.connect()
@@ -145,6 +187,27 @@ class MainActivity : AppCompatActivity() {
         xmppManager = null
         binding.tvStatus.text = "Disconnected"
         updateUIState(false)
+    }
+
+    private fun startOutgoingCall() {
+        val recipientJid = binding.etRecipientJid.text.toString().trim()
+
+        if (recipientJid.isEmpty()) {
+            Toast.makeText(this, "Please enter recipient JID", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (!recipientJid.contains("@")) {
+            Toast.makeText(this, "Invalid JID format. Use: user@domain.com", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val mediaType = if (binding.rbAudioCall.isChecked) "audio" else "video"
+
+        currentPeerJid = recipientJid
+        xmppManager?.initiateCall(recipientJid, mediaType)
+
+        binding.tvStatus.text = "Initiating call to $recipientJid..."
     }
 
     private fun handleIncomingMessage(message: Message, elementType: String) {
@@ -161,14 +224,14 @@ class MainActivity : AppCompatActivity() {
                 binding.llIncomingCall.visibility = android.view.View.VISIBLE
                 binding.tvCallerInfo.text = "Caller: ${message.from}"
             }
-
             "ringing" -> {
                 binding.tvStatus.text = "Call ringing..."
             }
             "accept" -> {
-                binding.tvStatus.text = "Call accepted"
+                binding.tvStatus.text = "Call accepted by peer"
                 binding.llIncomingCall.visibility = android.view.View.GONE
-                binding.llCallControls.visibility = android.view.View.VISIBLE
+                showCallInProgress()
+                startCallDuration()
             }
             "proceed" -> {
                 binding.tvStatus.text = "Call proceeding..."
@@ -178,28 +241,103 @@ class MainActivity : AppCompatActivity() {
 
     private fun answerCall() {
         currentCallId?.let { callId ->
-            xmppManager?.sendAcceptResponse(
-                binding.tvCallerInfo.text.toString().removePrefix("Caller: "),
-                callId
-            )
-            binding.llIncomingCall.visibility = android.view.View.GONE
-            binding.llCallControls.visibility = android.view.View.VISIBLE
-            binding.tvStatus.text = "Call in progress"
+            currentPeerJid?.let { peerJid ->
+                xmppManager?.acceptCall(peerJid, callId)
+                binding.llIncomingCall.visibility = android.view.View.GONE
+                showCallInProgress()
+                binding.tvStatus.text = "Accepting call..."
+            }
         }
     }
 
     private fun rejectCall() {
+        currentCallId?.let { callId ->
+            currentPeerJid?.let { peerJid ->
+                xmppManager?.terminateCall(peerJid, callId)
+            }
+        }
         currentCallId = null
+        currentPeerJid = null
         binding.llIncomingCall.visibility = android.view.View.GONE
+        binding.cardMakeCall.visibility = android.view.View.VISIBLE
         binding.tvStatus.text = "Call rejected"
     }
 
     private fun endCall() {
+        stopCallDuration()
+
+        currentCallId?.let { callId ->
+            currentPeerJid?.let { peerJid ->
+                xmppManager?.terminateCall(peerJid, callId)
+            }
+        }
+
         currentCallId = null
+        currentPeerJid = null
         binding.llCallControls.visibility = android.view.View.GONE
+        binding.cardMakeCall.visibility = android.view.View.VISIBLE
         binding.tvStatus.text = "Call ended"
         binding.tvSdpInfo.text = ""
         binding.tvIceCandidates.text = ""
+
+        // Reset call controls
+        isMuted = false
+        isSpeakerOn = false
+        binding.btnMute.text = "🔇 Mute"
+        binding.btnSpeaker.text = "🔊 Speaker"
+    }
+
+    private fun showCallInProgress() {
+        binding.llCallControls.visibility = android.view.View.VISIBLE
+        binding.llIncomingCall.visibility = android.view.View.GONE
+        binding.cardMakeCall.visibility = android.view.View.GONE
+        binding.tvPeerInfo.text = "Connected to: $currentPeerJid"
+    }
+
+    private fun startCallDuration() {
+        callStartTime = System.currentTimeMillis()
+        callDurationHandler = Handler(Looper.getMainLooper())
+        callDurationRunnable = object : Runnable {
+            override fun run() {
+                val duration = (System.currentTimeMillis() - callStartTime) / 1000
+                val minutes = duration / 60
+                val seconds = duration % 60
+                binding.tvCallDuration.text = String.format("%02d:%02d", minutes, seconds)
+                callDurationHandler?.postDelayed(this, 1000)
+            }
+        }
+        callDurationHandler?.post(callDurationRunnable!!)
+    }
+
+    private fun stopCallDuration() {
+        callDurationRunnable?.let {
+            callDurationHandler?.removeCallbacks(it)
+        }
+        callDurationHandler = null
+        callDurationRunnable = null
+        binding.tvCallDuration.text = "00:00"
+    }
+
+    private fun toggleMute() {
+        isMuted = !isMuted
+        binding.btnMute.text = if (isMuted) "🔊 Unmute" else "🔇 Mute"
+        Toast.makeText(
+            this,
+            if (isMuted) "Microphone muted" else "Microphone unmuted",
+            Toast.LENGTH_SHORT
+        ).show()
+        // TODO: Implement actual mute functionality with audio manager
+    }
+
+    private fun toggleSpeaker() {
+        isSpeakerOn = !isSpeakerOn
+        binding.btnSpeaker.text = if (isSpeakerOn) "📱 Earpiece" else "🔊 Speaker"
+        Toast.makeText(
+            this,
+            if (isSpeakerOn) "Speaker on" else "Speaker off",
+            Toast.LENGTH_SHORT
+        ).show()
+        // TODO: Implement actual speaker toggle with audio manager
     }
 
     private fun updateUIState(connected: Boolean) {
@@ -208,10 +346,12 @@ class MainActivity : AppCompatActivity() {
         binding.etUsername.isEnabled = !connected
         binding.etPassword.isEnabled = !connected
         binding.etDomain.isEnabled = !connected
+        binding.cardMakeCall.visibility = if (connected) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        stopCallDuration()
         xmppManager?.disconnect()
     }
 
