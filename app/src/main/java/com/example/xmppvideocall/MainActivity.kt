@@ -1,6 +1,5 @@
 package com.example.xmppvideocall
 
-
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -11,13 +10,15 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.xmppvideocall.databinding.ActivityMainBinding
-
 import org.jivesoftware.smack.packet.Message
+import org.webrtc.PeerConnection
+import org.webrtc.VideoTrack
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var xmppManager: XmppConnectionManager? = null
+    private var webRTCManager: WebRTCCallManager? = null
     private var currentCallId: String? = null
     private var currentPeerJid: String? = null
     private var callStartTime: Long = 0
@@ -25,11 +26,13 @@ class MainActivity : AppCompatActivity() {
     private var callDurationRunnable: Runnable? = null
     private var isMuted = false
     private var isSpeakerOn = false
+    private var isVideoCall = false
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
             Manifest.permission.INTERNET,
             Manifest.permission.ACCESS_NETWORK_STATE
         )
@@ -43,6 +46,71 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         setupUI()
         setupJingleHandler()
+        initializeWebRTC()
+    }
+
+    private fun initializeWebRTC() {
+        webRTCManager = WebRTCCallManager(this)
+        webRTCManager?.setRTCListener(object : WebRTCCallManager.RTCListener {
+            override fun onLocalSdpCreated(sdp: String, type: String) {
+                runOnUiThread {
+                    binding.tvStatus.text = "SDP Created: $type"
+                    binding.tvSdpInfo.text = sdp
+
+                    // Send SDP via XMPP Jingle
+                    currentCallId?.let { sessionId ->
+                        currentPeerJid?.let { peerJid ->
+                            if (type == "offer") {
+                                xmppManager?.sendSessionInitiate(peerJid, sessionId, sdp)
+                            } else if (type == "answer") {
+                                xmppManager?.sendSessionAccept(peerJid, sessionId, sdp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            override fun onIceCandidate(candidate: String, sdpMid: String, sdpMLineIndex: Int) {
+                runOnUiThread {
+                    val candidateInfo = "Candidate: $candidate\nMID: $sdpMid\nIndex: $sdpMLineIndex"
+                    binding.tvIceCandidates.text = candidateInfo
+
+                    // Parse WebRTC candidate string to Candidate object
+                    currentCallId?.let { sessionId ->
+                        currentPeerJid?.let { peerJid ->
+                            val jingleCandidate = parseWebRTCCandidate(candidate)
+                            xmppManager?.sendIceCandidate(peerJid, sessionId, jingleCandidate)
+                        }
+                    }
+                }
+            }
+
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
+                runOnUiThread {
+                    binding.tvStatus.text = "ICE State: $state"
+                }
+            }
+
+            override fun onCallConnected() {
+                runOnUiThread {
+                    binding.tvStatus.text = "Call Connected via WebRTC"
+                    Toast.makeText(this@MainActivity, "WebRTC connection established", Toast.LENGTH_SHORT).show()
+                }
+            }
+
+            override fun onCallDisconnected() {
+                runOnUiThread {
+                    binding.tvStatus.text = "WebRTC Disconnected"
+                }
+            }
+
+            override fun onRemoteVideoTrack(track: VideoTrack) {
+                runOnUiThread {
+                    // Handle remote video track if needed
+                    Toast.makeText(this@MainActivity, "Remote video track received", Toast.LENGTH_SHORT).show()
+                }
+            }
+        })
     }
 
     private fun checkPermissions() {
@@ -102,9 +170,16 @@ class MainActivity : AppCompatActivity() {
                     binding.tvStatus.text = "SDP Received: $action"
                     binding.tvSdpInfo.text = sdp
 
-                    if (action == "session-initiate") {
-                        // Call is being established
-                        showCallInProgress()
+                    when (action) {
+                        "session-initiate" -> {
+                            // Incoming call offer
+                            webRTCManager?.handleRemoteOffer(sdp)
+                            showCallInProgress()
+                        }
+                        "session-accept" -> {
+                            // Call accepted - handle answer
+                            webRTCManager?.handleRemoteAnswer(sdp)
+                        }
                     }
                 }
             }
@@ -115,6 +190,20 @@ class MainActivity : AppCompatActivity() {
                         "IP: ${it.ip}:${it.port} Type: ${it.type}"
                     }
                     binding.tvIceCandidates.text = candidateInfo
+
+                    // Add ICE candidates to WebRTC
+                    candidates.forEach { candidate ->
+                        // Convert Jingle candidate to WebRTC format
+                        val candidateSdp = "candidate:${candidate.foundation} ${candidate.component} " +
+                                "${candidate.protocol} ${candidate.priority} ${candidate.ip} " +
+                                "${candidate.port} typ ${candidate.type}"
+
+                        webRTCManager?.addIceCandidate(
+                            candidateSdp,
+                            "0", // Default media ID
+                            0
+                        )
+                    }
                 }
             }
         })
@@ -133,6 +222,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvStatus.text = "Connecting..."
 
         xmppManager = XmppConnectionManager(username, password, domain)
+        xmppManager?.setWebRTCManager(webRTCManager!!)
         xmppManager?.setConnectionListener(object : XmppConnectionManager.ConnectionListener {
             override fun onConnected() {
                 runOnUiThread {
@@ -166,6 +256,11 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     currentCallId = sessionId
                     binding.tvStatus.text = "Calling..."
+
+                    // Initialize WebRTC peer connection
+                    webRTCManager?.initializePeerConnection()
+                    webRTCManager?.startCall(isVideoCall)
+
                     Toast.makeText(this@MainActivity, "Call initiated", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -175,6 +270,27 @@ class MainActivity : AppCompatActivity() {
                     binding.tvStatus.text = "Call connected"
                     showCallInProgress()
                     startCallDuration()
+                }
+            }
+
+            override fun onSdpReceived(sdp: String, type: String, sessionId: String) {
+                runOnUiThread {
+                    binding.tvStatus.text = "SDP Received: $type"
+                    binding.tvSdpInfo.text = sdp
+
+                    // Pass SDP to WebRTC
+                    when (type.lowercase()) {
+                        "offer" -> webRTCManager?.handleRemoteOffer(sdp)
+                        "answer" -> webRTCManager?.handleRemoteAnswer(sdp)
+                    }
+                }
+            }
+
+            override fun onIceCandidateReceived(candidate: Candidate, sessionId: String) {
+                runOnUiThread {
+                    // Convert Jingle candidate to WebRTC format and add
+                    val candidateSdp = SDPJingleConverter.candidateToSdpLine(candidate)
+                    webRTCManager?.addIceCandidate(candidateSdp, "0", 0)
                 }
             }
         })
@@ -202,6 +318,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
+        isVideoCall = binding.rbVideoCall.isChecked
         val mediaType = if (binding.rbAudioCall.isChecked) "audio" else "video"
 
         currentPeerJid = recipientJid
@@ -219,10 +336,18 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 currentCallId = proposeElement?.getAttributeValue("id")
+                currentPeerJid = message.from.toString()
 
-                binding.tvStatus.text = "Incoming call from: ${message.from}"
+                // Check if it's video or audio call
+                val description = proposeElement?.getElements()?.find {
+                    it.elementName == "description"
+                }
+                val mediaType = description?.getAttributeValue("media") ?: "audio"
+                isVideoCall = mediaType == "video"
+
+                binding.tvStatus.text = "Incoming ${mediaType} call from: ${message.from}"
                 binding.llIncomingCall.visibility = android.view.View.VISIBLE
-                binding.tvCallerInfo.text = "Caller: ${message.from}"
+                binding.tvCallerInfo.text = "Caller: ${message.from}\nType: ${mediaType.uppercase()}"
             }
             "ringing" -> {
                 binding.tvStatus.text = "Call ringing..."
@@ -242,6 +367,10 @@ class MainActivity : AppCompatActivity() {
     private fun answerCall() {
         currentCallId?.let { callId ->
             currentPeerJid?.let { peerJid ->
+                // Initialize WebRTC for answering
+                webRTCManager?.initializePeerConnection()
+                webRTCManager?.acceptCall(isVideoCall)
+
                 xmppManager?.acceptCall(peerJid, callId)
                 binding.llIncomingCall.visibility = android.view.View.GONE
                 showCallInProgress()
@@ -265,6 +394,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun endCall() {
         stopCallDuration()
+
+        // End WebRTC call
+        webRTCManager?.endCall()
 
         currentCallId?.let { callId ->
             currentPeerJid?.let { peerJid ->
@@ -320,13 +452,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun toggleMute() {
         isMuted = !isMuted
+        webRTCManager?.toggleMute(isMuted)
         binding.btnMute.text = if (isMuted) "🔊 Unmute" else "🔇 Mute"
         Toast.makeText(
             this,
             if (isMuted) "Microphone muted" else "Microphone unmuted",
             Toast.LENGTH_SHORT
         ).show()
-        // TODO: Implement actual mute functionality with audio manager
     }
 
     private fun toggleSpeaker() {
@@ -338,6 +470,42 @@ class MainActivity : AppCompatActivity() {
             Toast.LENGTH_SHORT
         ).show()
         // TODO: Implement actual speaker toggle with audio manager
+    }
+
+    private fun sendJingleSessionInitiate(peerJid: String, sessionId: String, sdp: String) {
+        // Delegate to XmppConnectionManager
+        xmppManager?.sendSessionInitiate(peerJid, sessionId, sdp)
+    }
+
+    private fun sendJingleSessionAccept(peerJid: String, sessionId: String, sdp: String) {
+        // Delegate to XmppConnectionManager
+        xmppManager?.sendSessionAccept(peerJid, sessionId, sdp)
+    }
+
+    private fun sendIceCandidate(peerJid: String, sessionId: String, candidate: String,
+                                 sdpMid: String, sdpMLineIndex: Int) {
+        // Parse and send via XmppConnectionManager
+        val jingleCandidate = parseWebRTCCandidate(candidate)
+        xmppManager?.sendIceCandidate(peerJid, sessionId, jingleCandidate)
+    }
+
+    private fun parseWebRTCCandidate(candidateString: String): Candidate {
+        // Parse WebRTC candidate string: "candidate:foundation component protocol priority ip port typ type"
+        val parts = candidateString.split(" ")
+
+        return Candidate().apply {
+            if (parts.isNotEmpty() && parts[0].startsWith("candidate:")) {
+                foundation = parts[0].substring(10) // Remove "candidate:" prefix
+            }
+            if (parts.size > 1) component = parts[1]
+            if (parts.size > 2) protocol = parts[2]
+            if (parts.size > 3) priority = parts[3].toIntOrNull() ?: 0
+            if (parts.size > 4) ip = parts[4]
+            if (parts.size > 5) port = parts[5].toIntOrNull() ?: 0
+            if (parts.size > 7) type = parts[7] // parts[6] is "typ"
+            id = "candidate_${System.currentTimeMillis()}"
+            generation = 0
+        }
     }
 
     private fun updateUIState(connected: Boolean) {
@@ -352,6 +520,7 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopCallDuration()
+        webRTCManager?.cleanup()
         xmppManager?.disconnect()
     }
 
@@ -364,7 +533,7 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == PERMISSION_REQUEST_CODE) {
             val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
             if (!allGranted) {
-                Toast.makeText(this, "Permissions required for audio calls", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Permissions required for calls", Toast.LENGTH_LONG).show()
             }
         }
     }

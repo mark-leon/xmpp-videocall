@@ -21,6 +21,7 @@ class XmppConnectionManager(
     private var connection: AbstractXMPPConnection? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val jingleSessionManager = JingleSessionManager()
+    private var webRTCManager: WebRTCCallManager? = null
 
     interface ConnectionListener {
         fun onConnected()
@@ -29,6 +30,8 @@ class XmppConnectionManager(
         fun onMessageReceived(message: Message, elementType: String)
         fun onCallInitiated(sessionId: String)
         fun onCallAccepted(sessionId: String)
+        fun onSdpReceived(sdp: String, type: String, sessionId: String)
+        fun onIceCandidateReceived(candidate: Candidate, sessionId: String)
     }
 
     private var listener: ConnectionListener? = null
@@ -41,44 +44,39 @@ class XmppConnectionManager(
         this.listener = listener
     }
 
+    fun setWebRTCManager(manager: WebRTCCallManager) {
+        this.webRTCManager = manager
+    }
+
     fun connect() {
         scope.launch {
             try {
                 val configBuilder = XMPPTCPConnectionConfiguration.builder()
                     .setUsernameAndPassword(username, password)
                     .setXmppDomain(domain)
-                    .setHost("192.168.0.106")
-                    .setSecurityMode(ConnectionConfiguration.SecurityMode.disabled)
+                    .setSecurityMode(ConnectionConfiguration.SecurityMode.required)
 
                 host?.let { configBuilder.setHost(it) }
                 configBuilder.setPort(port)
 
                 val config = configBuilder.build()
-
-                // Step 2: Create XMPP connection
                 connection = XMPPTCPConnection(config)
-
-                // Step 3: Connect to server
                 connection?.connect()
                 Log.d(TAG, "Connected to XMPP server")
 
-                // Step 4: Login with credentials
                 connection?.login()
                 Log.d(TAG, "Logged in as ${connection?.user}")
 
-                // Step 5: Notify UI on main thread
                 withContext(Dispatchers.Main) {
                     listener?.onConnected()
                 }
 
-                // Step 6: Set presence to available
                 val presence = Presence(Presence.Type.available).apply {
                     mode = Presence.Mode.available
                     status = "Ready for calls"
                 }
                 connection?.sendStanza(presence)
 
-                // Step 7: Set up message listeners
                 setupListeners()
 
             } catch (e: Exception) {
@@ -119,6 +117,7 @@ class XmppConnectionManager(
             "propose" -> handlePropose(message)
             "ringing" -> handleRinging(message)
             "accept" -> handleAccept(message)
+            "proceed" -> handleProceed(message)
             else -> Log.d(TAG, "Unknown element type: $elementType")
         }
     }
@@ -127,7 +126,24 @@ class XmppConnectionManager(
         Log.d(TAG, "Received IQ: ${iq.toXML()}")
 
         try {
-            JingleMessageHandler.handleJingleIqMessage(iq)
+            val action = JingleMessageHandler.handleJingleIqMessage(iq)
+
+            // Get session ID from IQ
+            val jingleElement = iq.toString()
+            val sidMatch = Regex("""sid="([^"]+)"""").find(jingleElement)
+            val sessionId = sidMatch?.groupValues?.get(1) ?: ""
+
+            when (action) {
+                "session-initiate", "session-accept" -> {
+                    // SDP is already handled by JingleMessageHandler callback
+                    Log.d(TAG, "Session $action for session: $sessionId")
+                }
+                "transport-info" -> {
+                    // ICE candidates are already handled by JingleMessageHandler callback
+                    Log.d(TAG, "Transport info for session: $sessionId")
+                }
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Error handling Jingle IQ", e)
         }
@@ -143,22 +159,14 @@ class XmppConnectionManager(
     }
 
     private fun handleRinging(message: Message) {
-        val proposeElement = message.getExtension("propose", "urn:xmpp:jingle-message:0") as? StandardExtensionElement
-        proposeElement?.let {
-            val ringingId = it.getAttributeValue("id")
-            Log.d(TAG, "Ringing with ID: $ringingId")
+        Log.d(TAG, "Ringing message received")
+    }
 
-            val toJid = message.from.toString()
-            val fromJid = message.to.toString()
-
-            // Send ringing response
-            sendMessage(MessageBuilder.buildRingingMessage(toJid, ringingId))
-
-            // Send active message
-            sendMessage(MessageBuilder.buildActiveMessage(toJid, ringingId))
-
-            // Send proceed message
-            sendMessage(MessageBuilder.buildProceedMessage(toJid, fromJid, ringingId))
+    private fun handleProceed(message: Message) {
+        val proceedElement = message.getExtension("proceed", "urn:xmpp:jingle-message:0") as? StandardExtensionElement
+        proceedElement?.let {
+            val sessionId = it.getAttributeValue("id")
+            Log.d(TAG, "Proceed with ID: $sessionId")
         }
     }
 
@@ -168,28 +176,11 @@ class XmppConnectionManager(
 
         acceptId?.let {
             Log.d(TAG, "Accept received with ID: $it")
-
-            // Update session state
             jingleSessionManager.updateSessionState(it, JingleSessionManager.SessionState.ACTIVE)
 
-            // Send Jingle session-initiate IQ
-            scope.launch {
-                try {
-                    val myJid = connection?.user?.toString() ?: return@launch
-                    val peerJid = message.from.toString()
-
-                    val sessionInitiateIQ = jingleSessionManager.buildSessionInitiateIQ(
-                        myJid,
-                        peerJid,
-                        it
-                    )
-                    connection?.sendStanza(sessionInitiateIQ)
-
-                    Log.d(TAG, "Sent session-initiate IQ")
-
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error sending session-initiate", e)
-                }
+            // Notify listener
+            scope.launch(Dispatchers.Main) {
+                listener?.onCallAccepted(it)
             }
         }
     }
@@ -205,6 +196,17 @@ class XmppConnectionManager(
         }
     }
 
+    fun sendJingleIQ(iq: IQ) {
+        scope.launch {
+            try {
+                connection?.sendStanza(iq)
+                Log.d(TAG, "Jingle IQ sent: ${iq.toXML()}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending Jingle IQ", e)
+            }
+        }
+    }
+
     fun sendRingingResponse(toJid: String, callId: String) {
         sendMessage(MessageBuilder.buildRingingMessage(toJid, callId))
     }
@@ -213,16 +215,12 @@ class XmppConnectionManager(
         sendMessage(MessageBuilder.buildAcceptMessage(toJid, callId))
     }
 
-    // Initiate outgoing call
     fun initiateCall(recipientJid: String, mediaType: String = "audio") {
         scope.launch {
             try {
                 val myJid = connection?.user?.toString() ?: return@launch
 
-                // Create Jingle session
                 val session = jingleSessionManager.createSession(myJid, recipientJid, mediaType)
-
-                // Send Jingle Message propose
                 val proposeMessage = MessageBuilder.buildProposeMessage(recipientJid, session.sessionId)
                 connection?.sendStanza(proposeMessage)
 
@@ -241,25 +239,13 @@ class XmppConnectionManager(
         }
     }
 
-    // Accept incoming call
     fun acceptCall(callerJid: String, sessionId: String) {
         scope.launch {
             try {
                 val myJid = connection?.user?.toString() ?: return@launch
 
-                // Update session state
                 jingleSessionManager.updateSessionState(sessionId, JingleSessionManager.SessionState.PROCEEDING)
-
-                // Send accept message
                 sendMessage(MessageBuilder.buildAcceptMessage(callerJid, sessionId))
-
-                // Send Jingle session-accept IQ
-                val sessionAcceptIQ = jingleSessionManager.buildSessionAcceptIQ(
-                    myJid,
-                    callerJid,
-                    sessionId
-                )
-                connection?.sendStanza(sessionAcceptIQ)
 
                 Log.d(TAG, "Call accepted from $callerJid")
 
@@ -273,24 +259,88 @@ class XmppConnectionManager(
         }
     }
 
-    // Terminate call
+    fun sendSessionInitiate(peerJid: String, sessionId: String, sdp: String) {
+        scope.launch {
+            try {
+                val myJid = connection?.user?.toString() ?: return@launch
+
+                // Convert SDP to Jingle format
+                val jingleMessage = SDPJingleConverter.sdpToJingle(sdp, sessionId)
+                jingleMessage.action = "session-initiate"
+
+                // Build and send Jingle IQ
+                val sessionInitiateIQ = jingleSessionManager.buildSessionInitiateIQ(
+                    myJid,
+                    peerJid,
+                    sessionId
+                )
+                connection?.sendStanza(sessionInitiateIQ)
+
+                Log.d(TAG, "Sent session-initiate IQ for session: $sessionId")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending session-initiate", e)
+            }
+        }
+    }
+
+    fun sendSessionAccept(peerJid: String, sessionId: String, sdp: String) {
+        scope.launch {
+            try {
+                val myJid = connection?.user?.toString() ?: return@launch
+
+                // Convert SDP to Jingle format
+                val jingleMessage = SDPJingleConverter.sdpToJingle(sdp, sessionId)
+                jingleMessage.action = "session-accept"
+
+                // Build and send Jingle IQ
+                val sessionAcceptIQ = jingleSessionManager.buildSessionAcceptIQ(
+                    myJid,
+                    peerJid,
+                    sessionId
+                )
+                connection?.sendStanza(sessionAcceptIQ)
+
+                Log.d(TAG, "Sent session-accept IQ for session: $sessionId")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending session-accept", e)
+            }
+        }
+    }
+
+    fun sendIceCandidate(peerJid: String, sessionId: String, candidate: Candidate) {
+        scope.launch {
+            try {
+                val myJid = connection?.user?.toString() ?: return@launch
+
+                // Build transport-info IQ with ICE candidate
+                // This would need to be implemented in JingleSessionManager
+                Log.d(TAG, "Sending ICE candidate for session: $sessionId")
+
+                // For now, log the candidate
+                Log.d(TAG, "ICE Candidate: ${candidate.ip}:${candidate.port} type=${candidate.type}")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending ICE candidate", e)
+            }
+        }
+    }
+
     fun terminateCall(peerJid: String, sessionId: String) {
         scope.launch {
             try {
                 val myJid = connection?.user?.toString() ?: return@launch
 
-                // Send Jingle session-terminate IQ
                 val terminateIQ = jingleSessionManager.buildSessionTerminateIQ(
                     myJid,
                     peerJid,
                     sessionId
                 )
                 connection?.sendStanza(terminateIQ)
-
-                // Remove session
                 jingleSessionManager.terminateSession(sessionId)
 
-                Log.d(TAG, "Call terminated")
+                Log.d(TAG, "Call terminated for session: $sessionId")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error terminating call", e)
@@ -302,13 +352,13 @@ class XmppConnectionManager(
         return jingleSessionManager
     }
 
-
     private fun determineElementType(message: Message): String {
         return when {
             message.getExtension<StandardExtensionElement>("propose", "urn:xmpp:jingle-message:0") != null -> "propose"
             message.getExtension<StandardExtensionElement>("ringing", "urn:xmpp:jingle-message:0") != null -> "ringing"
             message.getExtension<StandardExtensionElement>("accept", "urn:xmpp:jingle-message:0") != null -> "accept"
             message.getExtension<StandardExtensionElement>("proceed", "urn:xmpp:jingle-message:0") != null -> "proceed"
+            message.getExtension<StandardExtensionElement>("reject", "urn:xmpp:jingle-message:0") != null -> "reject"
             else -> "unknown"
         }
     }
